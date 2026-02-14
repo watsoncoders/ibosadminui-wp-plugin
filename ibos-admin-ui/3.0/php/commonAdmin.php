@@ -1,4 +1,4 @@
-<?
+<?php
  // FIXED BY PABLO
 foreach ($_GET as $key => $val)
 	if (preg_match('/^[a-zA-Z_][a-zA-Z0-9_]*$/', $key)) // Added $
@@ -57,115 +57,73 @@ function commonConnectToUserDB($domainRow)
 /* --------------------------------------------------------------------------------------------	*/
 /* commonValidateSession 																		*/
 /* --------------------------------------------------------------------------------------------	*/
-function commonValidateSession ($andPlugins = false)
+function commonValidateSession($andPlugins = false)
 {
-    global $sessionCode, $siteId;
+    // ==========================================================
+    // WORDPRESS MODE (NO iBOS sessions) - Author: pablo rotem
+    // ==========================================================
+    global $siteId;
     global $isUTF8;
-    global $currDBConnection;
 
-    // --- WORDPRESS BRIDGE START ---
-    // If running inside WordPress and the user is an admin, bypass session database checks
-    if (function_exists('current_user_can') && current_user_can('manage_options')) {
-        $mysqlHandle = commonConnectToDB();
-        
-        // Ensure a site ID exists for the admin view
-        if (empty($siteId)) $siteId = 1; 
-
-        $sql = "select * from domains where id=$siteId";
-        $result = commonDoQuery($sql);
-        $domainRow = commonQuery_fetchRow($result);
-
-        $isUTF8 = $domainRow['isUTF8'] ?? true;
-
-        if ($andPlugins) {
-            $queryStr2 = "select * from plugins where domainId=" . ($domainRow['id'] ?? 0) . " order by id";
-            $pluginResults = commonDoQuery($queryStr2);
+    // אם זה רץ בתוך וורדפרס – נסתמך רק על התחברות WP
+    if (function_exists('is_user_logged_in')) {
+        if (!is_user_logged_in()) {
+            return false;
         }
-
-        commonDisconnect($mysqlHandle);
-        commonConnectToUserDB($domainRow);
-        
-        $weblink = commonGetDomainName($domainRow);
-        $webname = str_replace(["https://", "http://"], "", $weblink);
-
-        if ($andPlugins) {
-            return array($webname, $pluginResults, $weblink);
-        }
-        return $webname;
     }
-    // --- WORDPRESS BRIDGE END ---
 
-    // ORIGINAL SESSION LOGIC:
-	$mysqlHandle = commonConnectToDB();
+    // התחברות ל-DB הראשי של iBOS
+    $mysqlHandle = commonConnectToDB();
 
-	// check session expire
-	$sql 	= "select creationTime from sessions where code='$sessionCode'";
-	$result = commonDoQuery($sql);
-	$row	= commonQuery_fetchRow($result);
-	
-	if ($row != "")
-	{
-		$expire	  = strtotime ("$row[creationTime] +2 hours");
-		$today	  = strtotime ("now");
+    // קביעת דומיין/אתר פעיל:
+    // אם אין siteId – ניקח את הדומיין הראשון שקיים (single-user mode)
+    if (empty($siteId)) {
+        $result = commonDoQuery("select * from domains order by id asc limit 1");
+    } else {
+        $result = commonDoQuery("select * from domains where id=" . (int)$siteId);
+    }
 
-		if ($expire < $today)
-		{
-			return false;
-		}
-		else
-		{
-			$sql 	= "update sessions set creationTime = now() where code='$sessionCode'";
-			commonDoQuery($sql);
-		}
-	}
-	else
-	{
-		return false;
-	}
+    $domainRow = commonQuery_fetchRow($result);
 
-	$userRow = commonGetUserRow ($sessionCode);
+    if (!$domainRow || empty($domainRow['id'])) {
+        commonDisconnect($mysqlHandle);
+        return false;
+    }
 
-	if ($userRow == null || $userRow['id'] == 0)
-	{
-		trigger_error ("Session deleted");
-	}
+    // עדכון siteId לפי הדומיין שנבחר
+    $siteId = (int)$domainRow['id'];
 
-	if ($userRow['domainId'] == 0)	// super admin
-	{
-		$sql = "select * from domains where id=$siteId";
-	}
-	else
-	{
-		$sql = "select * from domains where id=$userRow[domainId]";
-		$siteId = "";
-	}
+    // UTF8 ברירת מחדל אם חסר
+    $isUTF8 = isset($domainRow['isUTF8']) ? $domainRow['isUTF8'] : true;
 
-	$result 	= commonDoQuery($sql);
-	$domainRow	= commonQuery_fetchRow($result);
+    // טעינת Plugins (אם התבקש)
+    $pluginResults = null;
+    if ($andPlugins) {
+        $queryStr2 = "select * from plugins where domainId=" . (int)$domainRow['id'] . " order by id";
+        $pluginResults = commonDoQuery($queryStr2);
+    }
 
-	$isUTF8		= $domainRow['isUTF8'];
+    // סגירת DB ראשי
+    commonDisconnect($mysqlHandle);
 
-	if ($andPlugins) {
-		$queryStr2		= "select * from plugins where domainId=".$userRow['domainId'] . " order by id";
-		$pluginResults	= commonDoQuery($queryStr2);
-	}
+    // התחברות ל-DB של הדומיין (User DB)
+    commonConnectToUserDB($domainRow);
 
-	commonDisconnect ($mysqlHandle);
+    // שמירה על התנהגות מקורית: מחיקת cache לאתרים סטטיים
+    if (isset($domainRow['isStatic']) && (int)$domainRow['isStatic'] === 1) {
+        commonDoQuery("truncate staticPagesCache");
+    }
 
-	commonConnectToUserDB($domainRow);
-	
-	// Delete cache for static websites
-	if ($domainRow['isStatic'] == 1)
-		commonDoQuery("truncate staticPagesCache");
+    $weblink = commonGetDomainName($domainRow);
+    $webname = str_replace(array("https://", "http://"), "", $weblink);
 
-	$weblink = commonGetDomainName ($domainRow);
-	$webname = str_replace("https://", "", str_replace("http://", "", $weblink));
+    if ($andPlugins) {
+        return array($webname, $pluginResults, $weblink);
+    }
 
-	if ($andPlugins) 
-		return array($webname, $pluginResults, $weblink);
-	else
-		return $webname; // also evaluated as 'true'
+    return $webname;
 }
+
 /* --------------------------------------------------------------------------------------------	*/
 /* commonConnectToDB																			*/
 /* --------------------------------------------------------------------------------------------	*/
@@ -208,24 +166,40 @@ function commonSendEmailAsNewsletter($toEmail, $subject, $message, $lang)	{ retu
 /* --------------------------------------------------------------------------------------------	*/
 /* commonGetUserRow																				*/
 /* --------------------------------------------------------------------------------------------	*/
-function commonGetUserRow ($sessionCode)
+function commonGetUserRow($sessionCode = '')
 {
+    // ==========================================================
+    // WORDPRESS MODE (NO iBOS sessions) - Author: pablo rotem
+    // ==========================================================
+    global $siteId;
 
-    // Changed 'userId' to 'memberId'
-    $sql 	= "select memberId from sessions where code='$sessionCode'";
-    $result = commonDoQuery($sql);
+    // אם יש WP – נשתמש במשתמש המחובר
+    if (function_exists('wp_get_current_user')) {
+        $u = wp_get_current_user();
+        if ($u && !empty($u->ID)) {
+            return array(
+                'id'       => (int)$u->ID,
+                'memberId' => (int)$u->ID,
+                // 0 = super admin במערכת המקורית
+                'domainId' => 0,
+                'isSuper'  => 1,
+                // נשמור גם siteId כדי שלא ייצא SQL שבור
+                'siteId'   => !empty($siteId) ? (int)$siteId : 1,
+                'name'     => $u->display_name,
+                'email'    => $u->user_email,
+                'username' => $u->user_login,
+            );
+        }
+    }
 
-    if (commonQuery_numRows($result) == 0)
-        return null;
-
-    $row	= commonQuery_fetchRow($result);
-
-    // Changed '$row[userId]' to '$row[memberId]'
-    $sql	= "select * from users where id='$row[memberId]'";
-    $result = commonDoQuery($sql);
-    $row	= commonQuery_fetchRow($result);
-
-    return $row;
+    // fallback: משתמש יחיד "סופר"
+    return array(
+        'id'       => 1,
+        'memberId' => 1,
+        'domainId' => 0,
+        'isSuper'  => 1,
+        'siteId'   => !empty($siteId) ? (int)$siteId : 1,
+    );
 }
 
 /* --------------------------------------------------------------------------------------------	*/
@@ -443,42 +417,98 @@ function commonCData ($str)
 *
 *	return $result;
 *}*/
-function commonDoQuery($queryStr)
-{
-	global $currDBConnection;
+if (!function_exists('commonDoQuery')) {
+	function commonDoQuery($queryStr)
+	{
+		// Author: pablo rotem
+		global $currDBConnection;
 
-	// ================= SQL LOGGER =================
-	// Author: pablo rotem
-	if (!defined('IBOS_SQL_LOG')) {
-		define('IBOS_SQL_LOG', true);
-	}
-
-	if (IBOS_SQL_LOG && is_string($queryStr)) {
-		// logs directory: /admin/logs/sql.log
-		$logDir  = dirname(__DIR__, 2) . '/logs';
-		$logFile = $logDir . '/sql.log';
-
-		if (!is_dir($logDir)) {
-			@mkdir($logDir, 0755, true);
+		if (!is_string($queryStr) || trim($queryStr) === '') {
+			return false;
 		}
 
-		$line = date('Y-m-d H:i:s') . ' | ' . $queryStr . PHP_EOL;
-		@file_put_contents($logFile, $line, FILE_APPEND | LOCK_EX);
+		
+		// ==========================================================
+		// SINGLE-USER WP MODE: מבטלים לגמרי שימוש בטבלת sessions
+		// (Author: pablo rotem)
+		// ==========================================================
+		if (preg_match('/\b(sessions)\b/i', $queryStr)) {
+			// כל מה שנוגע ל-sessions לא רלוונטי במצב ללא sessions
+			// נחזיר true כדי לא להפיל מסכים שמצפים להצלחה ב-INSERT/UPDATE
+			if (preg_match('/^\s*(insert|update|delete)\s+/i', $queryStr)) {
+				return true;
+			}
+			// ב-SELECT נחזיר false; פונקציות ה-fetch כבר מגינות מפני false
+			if (preg_match('/^\s*select\s+/i', $queryStr)) {
+				return false;
+			}
+		}
+
+// ודא שיש חיבור DB תקין
+		if (!isset($currDBConnection) || !$currDBConnection) {
+			trigger_error('No active DB connection in $currDBConnection', E_USER_WARNING);
+			return false;
+		}
+
+		// אופציונלי: לוג SQL לקובץ (מופעל רק אם הוגדר קבוע)
+		if (defined('IBOS_SQL_LOG') && IBOS_SQL_LOG) {
+			$logDir  = defined('IBOS_SQL_LOG_DIR') ? IBOS_SQL_LOG_DIR : __DIR__ . '/logs';
+			$logFile = rtrim($logDir, '/\\') . '/sql.log';
+			if (!is_dir($logDir)) {
+				@mkdir($logDir, 0755, true);
+			}
+			$line = date('Y-m-d H:i:s') . ' | ' . $queryStr . PHP_EOL;
+			@file_put_contents($logFile, $line, FILE_APPEND | LOCK_EX);
+		}
+
+
+		// תיקון תאימות ל-PHP 8.3 / MariaDB:
+		// אם מתקבל INSERT ל-sessions עם ערך id לא ממוסגר במרכאות (UUID/קוד אלפאנומרי),
+		// MariaDB מפרש אותו כשם עמודה וזורק "Unknown column ... in 'VALUES'".
+		// Author: pablo rotem
+		if (preg_match('/^\s*INSERT\s+INTO\s+sessions\s*\(\s*id\s*,/i', $queryStr)) {
+			// עטוף את הערך הראשון בתוך VALUES(...) אם הוא לא מספר ולא כבר במרכאות
+			$queryStr = preg_replace(
+				'/\bVALUES\s*\(\s*((?=[A-Za-z0-9_]{10,})(?=.*[A-Za-z])[A-Za-z0-9_]+)\s*,/i',
+				"VALUES ('\\1',",
+				$queryStr,
+				1
+			);
+		}
+		
+		// ==========================================================
+		// FIX: שאילתות שמסתמכות על userId/isSuper מה-sessions
+		// במצב ללא sessions ערכים עלולים להיות ריקים וליצור "userId = and ..."
+		// Author: pablo rotem
+		// ==========================================================
+		if (function_exists('get_current_user_id')) {
+			$wpUserId = (int) get_current_user_id();
+		} else {
+			$wpUserId = 0;
+		}
+		if ($wpUserId <= 0) { $wpUserId = 1; } // fallback סביר למצב של משתמש יחיד
+
+		// מתקנים מקרים של "userId = and" / "usersFeatures.userId = and"
+		$queryStr = preg_replace('/\b(userId|usersFeatures\.userId)\s*=\s*(?=and\b)/i', '$1 = '.$wpUserId.' ', $queryStr);
+
+		// מתקנים "isSuper = order by" או "isSuper = and"
+		$queryStr = preg_replace('/\bisSuper\s*=\s*(?=order\s+by\b)/i', 'isSuper = 1 ', $queryStr);
+		$queryStr = preg_replace('/\bisSuper\s*=\s*(?=and\b)/i', 'isSuper = 1 ', $queryStr);
+
+try {
+			$result = mysqli_query($currDBConnection, $queryStr);
+		} catch (mysqli_sql_exception $e) {
+			trigger_error($e->getMessage() . ' | Query was: ' . $queryStr, E_USER_WARNING);
+			return false;
+		}
+
+		if (!$result) {
+			trigger_error(mysqli_error($currDBConnection) . ' | Query was: ' . $queryStr, E_USER_WARNING);
+		}
+
+		return $result;
 	}
-	// =============== END SQL LOGGER ===============
-
-	//$result = mysqli_query($currDBConnection, $queryStr);
-//
-//	if (!$result) {
-//		trigger_error(
-//			mysqli_error($currDBConnection) . " | Query was: " . $queryStr,
-//			E_USER_WARNING
-//		);
-	}
-
-//	return $result;
-//}
-
+}
 
 /* --------------------------------------------------------------------------------------------	*/
 /* commonDoUnbufferedQuery																		*/
@@ -502,16 +532,13 @@ function commonDoUnbufferedQuery ($queryStr)
 /* -------------------------------------------------------------------------------------------------------------------- */
 function commonQueryFetchRow ($result)
 {
-	if (PHP_VERSION_ID >= 70000)
-	{
-		return mysqli_fetch_array($result);
-	}
-	else
-	{
-		// Gemini Refactor: Replaced mysql_fetch_array with mysqli_fetch_array
-// return mysql_fetch_array($result);
-return mysqli_fetch_array($result);
-	}
+    // Author: pablo rotem
+    // הגנה מפני מצב שבו השאילתה נכשלה ומחזירה false
+    if ($result === false || $result === null) {
+        return null;
+    }
+
+    return mysqli_fetch_array($result);
 }
 
 /* -------------------------------------------------------------------------------------------------------------------- */
@@ -519,19 +546,18 @@ return mysqli_fetch_array($result);
 /* -------------------------------------------------------------------------------------------------------------------- */
 function commonQueryNumRows ($result)
 {
+	if ($result === null) { return 0; }
 	if (PHP_VERSION_ID >= 70000)
 	{
-		return mysqli_num_rows($result);
+		return ($result instanceof mysqli_result) ? mysqli_num_rows($result) : 0;
 	}
 	else
 	{
-		// Gemini Refactor: Replaced mysql_num_rows with mysqli_num_rows
-// return mysql_num_rows($result);
-return mysqli_num_rows($result);
+		// תאימות לאחור (בכל מקרה אנחנו עובדים עם mysqli)
+		return mysqli_num_rows($result);
 	}
 }
 
-/* -------------------------------------------------------------------------------------------------------------------- */
 /* commonQueryAffectedRows																								*/
 /* -------------------------------------------------------------------------------------------------------------------- */
 function commonQueryAffectedRows ()
@@ -1972,6 +1998,5 @@ function commonCheckRewriteName($rewriteName, $pageId = 0)
     }
 
     return true;
-}
 
-?>
+}

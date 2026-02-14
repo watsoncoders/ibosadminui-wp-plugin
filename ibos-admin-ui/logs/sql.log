@@ -49,3 +49,7 @@
 2026-02-14 19:59:08 | INSERT INTO sessions (id, code, memberId, isSuper, creationTime, lastCheck)
          VALUES (NULL, 'e7d04ba2720572f1806dbcdc92c6c07041535251a67b4e1bf', 1, 1, NOW(), NOW())
 2026-02-14 19:59:08 | select creationTime from sessions where code='e7d04ba2720572f1806dbcdc92c6c07041535251a67b4e1bf'
+2026-02-14 20:21:30 | DELETE FROM sessions WHERE creationTime < '2026-02-14 14:21:00'
+2026-02-14 20:21:30 | INSERT INTO sessions (id, code, memberId, isSuper, creationTime, lastCheck)
+         VALUES (NULL, '6b2b3ac6a823824e574a754fb47f65760292ae3600a13c979', 1, 1, NOW(), NOW())
+2026-02-14 20:21:30 | select creationTime from sessions where code='6b2b3ac6a823824e574a754fb47f65760292ae3600a13c979'

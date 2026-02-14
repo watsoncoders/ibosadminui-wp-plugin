@@ -1,11 +1,23 @@
-<?
-
+<?php
 include "commonAdmin.php";
 
-// Securiry
-if (strlen($sessionCode) != 49 || !ctype_alnum($sessionCode))
-		exit;
+/**
+ * התאמות מצב "ללא Sessions" עבור תוסף וורדפרס.
+ * Author: pablo rotem
+ */
+if (function_exists('is_user_logged_in') && !is_user_logged_in()) {
+    if (function_exists('auth_redirect')) {
+        auth_redirect();
+        exit;
+    }
+    die('יש להתחבר למערכת וורדפרס כדי לגשת למסך זה.');
+}
 
+$currentWpUserId = function_exists('get_current_user_id') ? (int)get_current_user_id() : 0;
+$currentWpUser   = function_exists('wp_get_current_user') ? wp_get_current_user() : null;
+
+// Security (legacy session code אינו נדרש במצב תוסף ללא Sessions)
+$sessionCode = isset($_REQUEST['sessionCode']) ? (string)$_REQUEST['sessionCode'] : '';
 list($websiteName, $pluginResults, $websiteLink) = commonValidateSession (true);
 
 if ($websiteName)
@@ -20,11 +32,13 @@ if ($websiteName)
 }
 else
 {
-	header ("Location: ../../index.php");
-	exit;
+    // במצב תוסף, אם אין "websiteName" נחזיר שם אתר כללי ולא נזרוק החוצה.
+    $websiteName = function_exists('get_bloginfo') ? get_bloginfo('name') : 'iBOS';
+    $websiteLink = function_exists('home_url') ? home_url('/') : '#';
+    $pluginResults = '';
 }
 
-$guiLang = $_COOKIE['cookie_guiLang'];
+$guiLang = isset($_COOKIE['cookie_guiLang']) ? $_COOKIE['cookie_guiLang'] : '';
 
 if ($guiLang == "HEB" || $guiLang == "")
 {
@@ -56,26 +70,42 @@ $conn = commonConnectToDB();
 
 commonDoQuery("set names 'utf8'", $conn);
 
-$userRow 	= commonGetUserRow ($sessionCode);
-$userId		= $userRow['id'];
+// משתמש נוכחי (וורדפרס). במידה ואין מיפוי לטבלת users של iBOS, נשתמש בפרטי WP.
+$userRow = commonGetUserRow($sessionCode);
+if (!is_array($userRow) || empty($userRow['id'])) {
+    $userRow = array(
+        'id' => $currentWpUserId,
+        'domainId' => 0,
+        'myName' => ($currentWpUser && isset($currentWpUser->display_name)) ? $currentWpUser->display_name : 'Admin',
+        'prevEnter' => ''
+    );
+}
+$userId = (int)$userRow['id'];
+$domainIdUser = isset($userRow['domainId']) ? (int)$userRow['domainId'] : 0;
 
-// get isSuper
-$sql 		= "select isSuper from sessions where code='$sessionCode'";
-$result 	= commonDoQuery($sql);
-$row		= commonQuery_fetchRow($result);
-$isSuper	= $row['isSuper'];	
 
+// get isSuper (ללא Sessions -> סופר אדמין קבוע)
+$isSuper = 1;
 commonDoQuery("set names 'latin1'", $conn);
 
-$sql	 	= "select * from users where id = $userRow[id]";
-$result	 	= commonDoQuery($sql);
-$userRow 	= commonQuery_fetchRow($result);
-
+$sql = "select * from users where id = " . (int)$userId;
+$result = commonDoQuery($sql);
+$tmpUserRow = $result ? commonQuery_fetchRow($result) : null;
+if (is_array($tmpUserRow) && !empty($tmpUserRow)) {
+    $userRow = $tmpUserRow;
+    $domainIdUser = isset($userRow['domainId']) ? (int)$userRow['domainId'] : $domainIdUser;
+}
 commonDoQuery("set names 'utf8'", $conn);
 
 //$username	= ""; //iconv("windows-1255", "utf-8", stripslashes($userRow['myName']));
-$username	= iconv("windows-1255", "utf-8", stripslashes($userRow['myName']));
-
+$rawName = isset($userRow['myName']) ? (string)$userRow['myName'] : '';
+if ($rawName === '' && $currentWpUser && isset($currentWpUser->display_name)) {
+    $rawName = (string)$currentWpUser->display_name;
+}
+$username = $rawName !== '' ? @iconv("windows-1255", "utf-8", stripslashes($rawName)) : 'Admin';
+if ($username === false || $username === null || $username === '') {
+    $username = $rawName !== '' ? stripslashes($rawName) : 'Admin';
+}
 $menu 		= "";
 $subMenus 	= "";
 $prevGroup 	= "";
@@ -87,7 +117,7 @@ $sql = "select features_utf8.*, featuresGroups_utf8.subDirectory as groupName,
 			   features_utf8.description" . ($guiLang == "HEB" ? "" : "_ENG") . " as featureText
 		from (usedFeatures, features_utf8)
 		left join featuresGroups_utf8 on featuresGroups_utf8.id = features_utf8.groupId
-		where features_utf8.id = usedFeatures.featureId and userId = $userRow[id] and isSuper = $isSuper
+		where features_utf8.id = usedFeatures.featureId and userId = $userId and isSuper = $isSuper
 	   	order by usedFeatures.lastUsedAt desc limit 10";
 $result = commonDoQuery($sql);
 if ($result)
@@ -130,7 +160,7 @@ $sql = "select features_utf8.*, featuresGroups_utf8.subDirectory as groupName,
 		from featuresGroups_utf8, features_utf8, usersFeatures
 		where featuresGroups_utf8.id = features_utf8.groupId
 		and   features_utf8.id = usersFeatures.featureId
-		and   usersFeatures.userId = $userRow[id]
+		and   usersFeatures.userId = $userId
 		and   showInMenu = 1
 		order by featuresGroups_utf8.pos, features_utf8.pos";
 		
@@ -192,7 +222,7 @@ $hello = "<table>
 		  <tr>
 		  		<td class='font13'>&nbsp;&nbsp;&nbsp;" . ($guiLang == "ENG" ? "Hello" : "שלום") . " $username</td>";
 
-if ($userRow['prevEnter'] != "")
+if (isset($userRow['prevEnter']) && $userRow['prevEnter'] != "")
 {
 	$hello .= "<td class='font13'>,&nbsp;" . (($guiLang == "ENG") ? "Your latest login was at " : "מועד כניסתך האחרון") . "</td>
 			   <td>&nbsp;<span class='sep'></span>&nbsp;</td>
@@ -215,7 +245,7 @@ $gotoPage 		= "../html/general/userHomePage.html";
 $supportText	= "";
 $accountText	= "";
 
-if ($domainId == 530 && $userId != 3135)	// loox
+if ($domainIdUser == 530 && $userId != 3135)	// loox
 {
 	$gotoPage 		= "../html_plugins/530/handleLooxOrders.html";
 	$supportText	= "";
@@ -234,23 +264,23 @@ if ($domainId == 530 && $userId != 3135)	// loox
 		<meta http-equiv="content-type" content="text/html;charset=utf-8">
 		<title>i-bos - מערכת ניהול אתרים דינמיים</title>
 		<link rel="stylesheet" href="../css/common.css" type="text/css">
-		<link rel="stylesheet" href="../css/<? echo $guiLang; ?>.css" type="text/css">
+		<link rel="stylesheet" href="../css/<?php echo $guiLang; ?>.css" type="text/css">
 		<link rel="stylesheet" href="../easyui/easyui.css" type="text/css">
-		<?
+		<?php
 			if ($guiLang == "HEB") 
 				echo "<link rel='stylesheet' type='text/css' href='../easyui/easyui-rtl.css'>\n";
 
 			$privateCss = "";
-			if (file_exists("../css/private$userRow[domainId].css"))
+			if (file_exists("../css/private".$domainIdUser.".css"))
 			{
-				echo "<link rel='stylesheet' type='text/css' href='../css/private$userRow[domainId].css'>\n";
-				$privateCss = "private$userRow[domainId].css";
+				echo "<link rel='stylesheet' type='text/css' href='../css/private".$domainIdUser.".css'>\n";
+				$privateCss = "private".$domainIdUser.".css";
 			}
 
 		?>
 		<script type="text/javascript" src="//ajax.googleapis.com/ajax/libs/jquery/1.8.2/jquery.min.js"></script>
 		<script type="text/javascript" src="../easyui/jquery.easyui.min.js"></script>
-		<?
+		<?php
 			if ($guiLang == "HEB") 
 				echo "<script type='text/javascript' src='../easyui/easyui-rtl.js'></script>\n";
 		?>
@@ -273,17 +303,17 @@ if ($domainId == 530 && $userId != 3135)	// loox
 						$("#floatMenu").hide();
 					}
 
-					var langs = "<? echo $usedLangs; ?>";
+					var langs = "<?php echo $usedLangs; ?>";
 
 					commonSetGlobalData ("featureId", "0");
 
 					commonSetGlobalData ("langArray", 		 langs.split(","));
-					commonSetGlobalData ("guiLang", 		 "<? echo $guiLang; ?>");
-					commonSetGlobalData ("websiteShortName", "<? echo $websiteName; ?>");
-					commonSetGlobalData ("sessionCode", 	 "<? echo $sessionCode; ?>");
-					commonSetGlobalData ("userId", 			 "<? echo $userId; ?>");
-					commonSetGlobalData ("siteUrl",			 "<? echo $websiteLink; ?>");
-					commonSetGlobalData ("privateCss",		 "<? echo $privateCss; ?>");
+					commonSetGlobalData ("guiLang", 		 "<?php echo $guiLang; ?>");
+					commonSetGlobalData ("websiteShortName", "<?php echo $websiteName; ?>");
+					commonSetGlobalData ("sessionCode", 	 "<?php echo $sessionCode; ?>");
+					commonSetGlobalData ("userId", 			 "<?php echo $userId; ?>");
+					commonSetGlobalData ("siteUrl",			 "<?php echo $websiteLink; ?>");
+					commonSetGlobalData ("privateCss",		 "<?php echo $privateCss; ?>");
 				});
 					
 				$(window).resize(function() 
@@ -306,29 +336,29 @@ if ($domainId == 530 && $userId != 3135)	// loox
 		<div id="header">
 			<div id="header_in">
 				<div id="logo"><img src="../designFiles/ibos.png" title="i-Bos גרסה 3.0"
-					style="cursor:pointer" onclick="generalShowPage(1, '<? echo $gotoPage; ?>')" /></div>
+					style="cursor:pointer" onclick="generalShowPage(1, '<?php echo $gotoPage; ?>')" /></div>
 				<div id="headerTop">
 					<table>
 					<tr>
 						<td id="headerTop_row1_col1">
 							<div class="headerTop_col_in">
 								&nbsp;&nbsp;
-								<a href="http://www.interuse.com/hesk22/index.php?a=add" target="_blank"><? echo $supportText; ?></a>
+								<a href="http://www.interuse.com/hesk22/index.php?a=add" target="_blank"><?php echo $supportText; ?></a>
 								&nbsp;&nbsp;&nbsp;
-								<a href="http://www.interuse.com/?user=<? echo $userId; ?>" target="_blank"><? echo $accountText; ?></a>
+								<a href="http://www.interuse.com/?user=<?php echo $userId; ?>" target="_blank"><?php echo $accountText; ?></a>
 								&nbsp;&nbsp;
-								<a href="../../index.php"><img src="../designFiles/iconExit.png" />&nbsp; <? echo $exitText; ?></a>
+								<a href="../../index.php"><img src="../designFiles/iconExit.png" />&nbsp; <?php echo $exitText; ?></a>
 								&nbsp;&nbsp;&nbsp;
 							</div>
 						</td>
 						<td id="headerTop_vsep" rowspan="3"><div></div></td>
 						<td id="headerTop_col2" rowspan="3">
-							<div class="headerTop_col_in"><? echo $websiteText; ?></div>
+							<div class="headerTop_col_in"><?php echo $websiteText; ?></div>
 						</td>
 					</tr>
 					<tr>
 						<td id="headerTop_row2_col1">
-							<div class="headerTop_col_in font13"><? echo $hello; ?></div>
+							<div class="headerTop_col_in font13"><?php echo $hello; ?></div>
 						</td>
 					</tr>
 					</table>
@@ -337,14 +367,14 @@ if ($domainId == 530 && $userId != 3135)	// loox
 		</div>
 		<div id="mainMenu">
 			<div id="mainMenu_in">
-				<? echo $menu; ?>
-				<? echo $subMenus; ?>
+				<?php echo $menu; ?>
+				<?php echo $subMenus; ?>
 			</div>
 		</div>
 		<div id="mainHtml">
-			<iframe name ="mainFrame" frameborder="0" width="980" height="900" style="margin:0px" src="<? echo $gotoPage; ?>"></iframe>
+			<iframe name ="mainFrame" frameborder="0" width="980" height="900" style="margin:0px" src="<?php echo $gotoPage; ?>"></iframe>
 		</div>
-		<div id="floatMenu"><? echo $floatMenu; ?></div>
+		<div id="floatMenu"><?php echo $floatMenu; ?></div>
 		<div id="globalData"></div>
 	</body>
 </html>
