@@ -1,0 +1,223 @@
+<?php
+declare(strict_types=1);
+
+/**
+ * commonAdmin.php — PHP 8.3 Ready
+ * שימוש ב־$mysqli שמוגדר ב־private.php בלבד (ללא חיבורים כפולים).
+ * כולל עטיפות DB, טיפול פרמטרים בטוח, עזרי טקסט ו־fallbacks ל־XML.
+ */
+
+if (session_status() === PHP_SESSION_NONE) session_start();
+date_default_timezone_set('Asia/Jerusalem');
+mb_internal_encoding('UTF-8');
+
+// נתיבים
+define('COMMON_DIR', __DIR__);                   // .../admin/3.0/php
+define('SITE_ROOT', dirname(COMMON_DIR, 3));     // .../public_html
+
+// טעינת חיבור יחיד מהשורש
+require_once SITE_ROOT . '/private.php';
+// [fixed by pablo rotem - single_db_source] שימוש ב־private.php בלבד לחיבור DB
+
+// בדיקת חיבור
+global $mysqli;
+if (!isset($mysqli) || !($mysqli instanceof mysqli)) {
+    throw new RuntimeException('DB connection ($mysqli) not initialized in private.php');
+}
+
+// =======================
+// פרמטרים — בטוח, ללא each()/eval()
+// =======================
+$ALLOWED_PARAMS = [
+    'guiLang','domainId','user','username','password','action','page','id',
+    'nonce','token','search','sort','order','limit','offset','language','siteId','sessionCode'
+];
+// [fixed by pablo rotem - remove_each_eval] ביטול each()/eval ועיבוד פרמטרים מאובטח
+
+function _collect(array $src, array $wl): array {
+    $out = [];
+    foreach ($src as $k => $v) {
+        if (!is_string($k)) continue;
+        if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_]*$/', $k)) continue;
+        if (!in_array($k, $wl, true)) continue;
+        $out[$k] = is_array($v) ? $v : trim((string)$v);
+    }
+    return $out;
+}
+$REQ = _collect($_GET, $ALLOWED_PARAMS);
+$REQ = _collect($_POST, $ALLOWED_PARAMS) + $REQ;
+$REQ = _collect($_COOKIE, $ALLOWED_PARAMS) + $REQ;
+
+// יצירת משתנים דינמיים לצורך תאימות (ללא eval)
+foreach ($REQ as $k => $v) { $$k = $v; }
+// [fixed by pablo rotem - dynamic_vars_no_eval] משתנים דינמיים בצורה בטוחה
+
+// =======================
+// עזרי אבטחה/טקסט
+// =======================
+function e(string $s): string { return htmlspecialchars($s, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); }
+// [fixed by pablo rotem - html_escape_helper]
+
+function admin_csrf_token(): string {
+    if (empty($_SESSION['_admin_csrf'])) $_SESSION['_admin_csrf'] = bin2hex(random_bytes(16));
+    return $_SESSION['_admin_csrf'];
+}
+// [fixed by pablo rotem - csrf_token_init]
+
+function verify_admin_csrf(?string $t): bool {
+    return is_string($t) && isset($_SESSION['_admin_csrf']) && hash_equals($_SESSION['_admin_csrf'], $t);
+}
+// [fixed by pablo rotem - csrf_token_verify]
+
+// =======================
+// עטיפות DB — על בסיס $mysqli יחיד
+// =======================
+function commonConnectToDB(): mysqli { global $mysqli; return $mysqli; }
+// [fixed by pablo rotem - single_connection_wrapper]
+
+function commonDoQuery(string $sql) {
+    $db = commonConnectToDB();
+    $res = @$db->query($sql);
+    if ($res === false) trigger_error($db->error . " | SQL: " . $sql);
+    return $res;
+}
+// [fixed by pablo rotem - safe_query_with_trigger]
+
+function commonQueryFetchRow($result) { return $result ? $result->fetch_assoc() : null; }
+function commonQueryNumRows($result)  { return $result ? $result->num_rows : 0; }
+function commonQueryAffectedRows()    { return commonConnectToDB()->affected_rows; }
+function commonQueryDataSeek($r,$i)   { return $r ? $r->data_seek((int)$i) : false; }
+function commonQueryEscapeStr($s)     { return commonConnectToDB()->real_escape_string((string)$s); }
+function commonQueryLastInsertId()    { return commonConnectToDB()->insert_id; }
+// [fixed by pablo rotem - mysqli_adapters]
+
+// תאימות שמית לקוד ישן
+function commonQuery_fetchRow($r){return commonQueryFetchRow($r);}
+function commonQuery_numRows($r){return commonQueryNumRows($r);}
+function commonQuery_affectedRows_compat(){return commonQueryAffectedRows();}
+function commonQuery_dataSeek($r,$i){return commonQueryDataSeek($r,$i);}
+function commonQuery_escapeStr($s){return commonQueryEscapeStr($s);}
+function commonQuery_insertId(){return commonQueryLastInsertId();}
+// [fixed by pablo rotem - legacy_name_aliases]
+
+// =======================
+// XML Fallbacks — אם לא נטען ממקום אחר
+// =======================
+if (!function_exists('xmlParser_getValue')) {
+    function xmlParser_getValue($xml, string $tag) {
+        if (!is_string($xml) || $xml==='') return '';
+        if (preg_match("~<{$tag}>(.*?)</{$tag}>~s", $xml, $m)) return trim((string)$m[1]);
+        return '';
+    }
+}
+// [fixed by pablo rotem - xml_value_fallback]
+
+if (!function_exists('xmlParser_getValues')) {
+    function xmlParser_getValues($xml, string $tag): array {
+        if (!is_string($xml) || $xml==='') return [];
+        $out=[]; if(preg_match_all("~<{$tag}>(.*?)</{$tag}>~s",$xml,$m)) foreach($m[1] as $v) $out[]=trim((string)$v);
+        return $out;
+    }
+}
+// [fixed by pablo rotem - xml_values_fallback]
+
+// =======================
+// סשן/דומיין/משתמש — הכל במסד israelidb2
+// =======================
+function commonGetUserRow(string $sessionCode) {
+    $scode = commonQueryEscapeStr($sessionCode);
+    $r1 = commonDoQuery("SELECT userId FROM sessions WHERE code='$scode'");
+    if (!commonQuery_numRows($r1)) return null;
+    $uid = commonQuery_fetchRow($r1)['userId'] ?? 0;
+    $r2 = commonDoQuery("SELECT * FROM users WHERE id='".commonQueryEscapeStr((string)$uid)."'");
+    return commonQuery_fetchRow($r2);
+}
+// [fixed by pablo rotem - safe_user_fetch]
+
+function commonValidateSession(bool $andPlugins=false) {
+    global $sessionCode, $siteId, $isUTF8;
+    if (empty($sessionCode)) return false;
+
+    $scode = commonQueryEscapeStr($sessionCode);
+    $r = commonDoQuery("SELECT creationTime FROM sessions WHERE code='$scode'");
+    $row = commonQuery_fetchRow($r);
+    if (!$row) return false;
+
+    if (strtotime($row['creationTime'].' +2 hours') < time()) return false;
+    commonDoQuery("UPDATE sessions SET creationTime=NOW() WHERE code='$scode'");
+
+    $userRow = commonGetUserRow($sessionCode);
+    if (!$userRow || (int)$userRow['id']===0) return false;
+
+    $domainId = (int)($userRow['domainId'] ?? 0);
+    $sql = $domainId===0
+        ? "SELECT * FROM domains WHERE id=".(int)$siteId
+        : "SELECT * FROM domains WHERE id=".$domainId;
+    if ($domainId!==0) $siteId = "";
+
+    $res = commonDoQuery($sql);
+    $domainRow = commonQuery_fetchRow($res);
+    $isUTF8 = (int)($domainRow['isUTF8'] ?? 0);
+
+    $weblink = commonGetDomainName($domainRow);
+    $webname = str_replace(['https://','http://'],'',$weblink);
+
+    if ($andPlugins) {
+        $plugins = commonDoQuery("SELECT * FROM plugins WHERE domainId=".$domainId." ORDER BY id");
+        return [$webname, $plugins, $weblink];
+    }
+    return $webname;
+}
+// [fixed by pablo rotem - session_validate_time_update]
+
+function commonGetDomainRow() {
+    global $sessionCode;
+    $userRow = commonGetUserRow((string)$sessionCode);
+    if (!$userRow) return null;
+    $res = commonDoQuery("SELECT * FROM domains WHERE id=".(int)$userRow['domainId']);
+    return commonQuery_fetchRow($res);
+}
+// [fixed by pablo rotem - domain_row_fetch]
+
+function commonGetDomainName(array $domainRow) {
+    if (!empty($domainRow['siteUrl'])) return $domainRow['siteUrl'];
+
+    $hdir = "";
+    $hd = (string)($domainRow['homeDir'] ?? '');
+    if (str_starts_with($hd,"public_html"))      $hdir = substr($hd,11);
+    elseif (str_starts_with($hd,"httpdocs"))     $hdir = substr($hd,8);
+    elseif ($hd!=="" && $hd!==(string)$domainRow['domainName']) $hdir = "/".$hd;
+
+    $promo = "";
+    $dn = (string)($domainRow['domainName'] ?? '');
+    if (!str_starts_with($dn,"www.")
+        && !preg_match('/^(\d{1,3}\.){3}\d{1,3}$/',$dn)
+        && !str_contains($dn,'telhai') && !str_contains($dn,'leida') && !str_contains($dn,'outdoor') && !str_contains($dn,'panya')) {
+        $promo = "www.";
+    }
+    $protocol = !empty($domainRow['isHttps']) ? "https" : "http";
+    return "{$protocol}://{$promo}{$dn}{$hdir}";
+}
+// [fixed by pablo rotem - domain_url_builder]
+
+// =======================
+// עזרי טקסט/פלט
+// =======================
+function commonCData($s){return "<![CDATA[".(string)$s."]]>";}
+function commonValidXml($text,$withCData=true){
+    $text = stripslashes((string)$text);
+    $text = preg_replace("~<colgroup>[a-zA-Z0-9 \"=/<>/]*</colgroup>~","",$text);
+    return $withCData ? commonCData($text) : $text;
+}
+// [fixed by pablo rotem - xml_cleanup]
+
+function commonCutText($text,$len,$after=""){
+    $t=(string)$text;
+    if (mb_strlen($t,'UTF-8')>$len){
+        $t=mb_substr($t,0,$len,'UTF-8');
+        $p=mb_strrpos($t," ",0,'UTF-8'); if($p!==false)$t=mb_substr($t,0,$p,'UTF-8');
+        $t.=$after;
+    }
+    return $t;
+}
+// [fixed by pablo rotem - mb_cut_safe]

@@ -1,200 +1,107 @@
 <?php
 /**
- * Plugin Name: iBOS Admin UI (Mock)
- * Description: שלד UI בסגנון i-bos בתוך לוח הבקרה של וורדפרס (RTL). בשלב זה: עיצוב ותצוגה בלבד.
- * Version: 0.1.0
+ * Plugin Name: i-BOS Admin UI (Bridge via iFrame)
+ * Description: מציג את מערכת i-BOS בתוך לוח הבקרה של וורדפרס באמצעות iFrame (מניעת קונפליקטים JS/CSS).
+ * Version: 3.0.1
  * Author: pablo rotem
- * Requires at least: 6.0
- * Requires PHP: 8.3
  */
 
-if (!defined('ABSPATH')) {
-    exit;
-}
+if (!defined('ABSPATH')) exit;
 
-final class IBOS_Admin_UI_PabloRotem
+define('IBOS_PLUGIN_DIR', plugin_dir_path(__FILE__));
+define('IBOS_30_DIR', IBOS_PLUGIN_DIR . '3.0/');
+define('IBOS_30_PHP_DIR', IBOS_30_DIR . 'php/');
+define('IBOS_30_URL', plugin_dir_url(__FILE__) . '3.0/');
+
+add_action('admin_menu', function () {
+    add_menu_page(
+        'i-BOS Admin',
+        'i-BOS Admin',
+        'manage_options',
+        'ibos-admin-panel',
+        'ibos_render_admin_page',
+        'dashicons-layout',
+        2
+    );
+});
+
+function ibos_render_admin_page(): void
 {
-    public const SLUG = 'ibos-admin-ui';
-
-    public function __construct()
-    {
-        // 1. Load the legacy logic immediately so its functions are available to WordPress
-        $common_path = plugin_dir_path(__FILE__) . '3.0/php/commonAdmin.php';
-        if (file_exists($common_path)) {
-            require_once($common_path);
-        }
-
-        add_action('admin_menu', [$this, 'register_menu']);
-        add_action('admin_enqueue_scripts', [$this, 'enqueue_assets']);
-
-        // 2. Register a handler for the AJAX commands sent from your admin.js
-        add_action('wp_ajax_ibos_cmd', [$this, 'handle_ibos_command']);
+    if (!current_user_can('manage_options')) {
+        wp_die(__('You do not have sufficient permissions.'));
     }
 
-    public function register_menu(): void
-    {
-        add_menu_page(
-            'i-bos',
-            'i-bos',
-            'manage_options',
-            self::SLUG,
-            [$this, 'render_page'],
-            'dashicons-screenoptions',
-            2
-        );
+    $mainPhp = IBOS_30_PHP_DIR . 'main.php';
+    $commonAdmin = IBOS_30_PHP_DIR . 'commonAdmin.php';
+
+    if (!is_file($mainPhp) || !is_file($commonAdmin)) {
+        echo '<div class="notice notice-error"><p>חסר קובץ i-BOS: בדוק שקיימים 3.0/php/main.php ו-3.0/php/commonAdmin.php בתוך התוסף.</p></div>';
+        return;
     }
 
-    /**
-     * This new function handles the background requests from your UI
-     * It connects to the israeli_admin database and runs legacy server logic.
-     */
-    public function handle_ibos_command(): void
-    {
-        // Set context for legacy scripts
-        global $sessionCode, $siteId;
-        $sessionCode = "WP_INTEGRATED_ADMIN";
-        $siteId = 1; // Default for hashuk-2
+    // נטען פונקציות DB של iBOS (mysqli וכו')
+    require_once $commonAdmin;
 
-        // Authenticate via the bridge we built in commonAdmin.php
-        if (function_exists('commonValidateSession')) {
-            commonValidateSession();
-        }
+    // יצירת/הבטחת sessionCode תקין בטבלת sessions
+    $sessionCode = ibos_ensure_session_code();
 
-        // Include the legacy server router
-        $server_path = plugin_dir_path(__FILE__) . '3.0/php/server.php';
-        if (file_exists($server_path)) {
-            include($server_path);
-        }
+    // מציגים את המערכת המקורית ב-iframe כדי לשמור על העיצוב/תפריטים/JS
+    $src = IBOS_30_URL . 'php/main.php?sessionCode=' . rawurlencode($sessionCode);
 
-        wp_die(); // Required for WordPress AJAX
-    }
+    echo '<div class="wrap" style="padding:0;margin:0">';
+    echo '<h1 style="margin: 12px 0;">i-BOS Admin</h1>';
 
-    public function enqueue_assets(string $hook): void
-    {
-        // נטען רק בעמוד של התוסף
-        if ($hook !== 'toplevel_page_' . self::SLUG) {
-            return;
-        }
+    echo '<iframe
+            src="' . esc_url($src) . '"
+            style="width:100%;height:calc(100vh - 160px);border:1px solid #ddd;background:#fff;"
+            frameborder="0"
+            referrerpolicy="no-referrer"
+          ></iframe>';
 
-        $ver = '0.1.0';
-        $base = plugin_dir_url(__FILE__) . 'assets/';
-
-        wp_enqueue_style('ibos-admin-ui-css', $base . 'admin.css', [], $ver);
-
-        // וורדפרס כבר מגיע עם jQuery (לא משתמשים ב-1.8.2 הישן)
-        wp_enqueue_script('jquery');
-        wp_enqueue_script('ibos-admin-ui-js', $base . 'admin.js', ['jquery'], $ver, true);
-
-        wp_localize_script('ibos-admin-ui-js', 'IBOS_UI', [
-            'siteName'  => get_bloginfo('name'),
-            'siteUrl'   => home_url('/'),
-            'userName'  => wp_get_current_user()->display_name ?: 'משתמש',
-            'lastLogin' => date_i18n('d.m.Y , H:i'),
-        ]);
-    }
-
-    public function render_page(): void
-    {
-        if (!current_user_can('manage_options')) {
-            wp_die('אין הרשאה.');
-        }
-
-        // הערה: זה UI בלבד. בהמשך נחבר פעולות/נתיבים/תוכן דינמי.
-        ?>
-        <div class="ibos-wrap" dir="rtl">
-            <div class="ibos-header">
-                <div class="ibos-header-in">
-                    <div class="ibos-logo" title="i-Bos">
-                        <span class="ibos-logo-mark">i</span>
-                        <span class="ibos-logo-text">-BOS</span>
-                    </div>
-
-                    <div class="ibos-header-top">
-                        <div class="ibos-header-top-left">
-                            <a class="ibos-exit" href="<?php echo esc_url(admin_url()); ?>">
-                                <span class="dashicons dashicons-migrate"></span>
-                                יציאה
-                            </a>
-                        </div>
-
-                        <div class="ibos-header-top-right">
-                            <div class="ibos-managed-title">האתר המנוהל<span class="ibos-sep"></span></div>
-                            <div class="ibos-sitebox">
-                                <a href="<?php echo esc_url(home_url('/')); ?>" target="_blank" rel="noopener">
-                                    <?php echo esc_html(parse_url(home_url('/'), PHP_URL_HOST) ?: home_url('/')); ?>
-                                </a>
-                            </div>
-
-                            <div class="ibos-hello">
-                                <span class="ibos-hello-strong">שלום</span>
-                                <span class="ibos-user" id="ibosUserName"><?php echo esc_html(wp_get_current_user()->display_name ?: 'משתמש'); ?></span>
-                                <span class="ibos-sep"></span>
-                                <span class="ibos-lastlogin">מועד כניסתך האחרון: <span id="ibosLastLogin"><?php echo esc_html(date_i18n('d.m.Y , H:i')); ?></span></span>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <div class="ibos-mainmenu">
-                <div class="ibos-mainmenu-in">
-
-                    <!-- כפתור “בשימוש לאחרונה” למובייל -->
-                    <button type="button" id="ibosRecentBtn" class="ibos-menubtn">
-                        בשימוש לאחרונה <span class="ibos-down">▾</span>
-                    </button>
-
-                   <div class="ibos-topnav">
-    <button class="ibos-menubtn" data-page="settings">הגדרות <span class="ibos-down">▾</span></button>
-    <button class="ibos-menubtn" data-page="design">עיצוב <span class="ibos-down">▾</span></button>
-    <button class="ibos-menubtn" data-page="locations">תוכן בסיסי <span class="ibos-down">▾</span></button>
-    <button class="ibos-menubtn" data-page="extended_content">תוכן מורחב <span class="ibos-down">▾</span></button>
-    <button class="ibos-menubtn" data-page="lists">רשימות <span class="ibos-down">▾</span></button>
-    <button class="ibos-menubtn" data-page="boards">לוחות <span class="ibos-down">▾</span></button>
-    <button class="ibos-menubtn" data-page="social">רשתות חברתיות <span class="ibos-down">▾</span></button>
-    <button class="ibos-menubtn" data-page="ecommerce">מסחר אלקטרוני <span class="ibos-down">▾</span></button>
-    <button class="ibos-menubtn" data-page="crm">קשרי לקוחות <span class="ibos-down">▾</span></button>
-    <button class="ibos-menubtn" data-page="addons">תוספות ייחודיות <span class="ibos-down">▾</span></button>
-</div>
-
-            <div class="ibos-body">
-                <!-- “בשימוש לאחרונה” (צד ימין בדסקטופ) -->
-                <aside id="ibosFloatMenu" class="ibos-floatmenu" aria-label="בשימוש לאחרונה">
-                    <div class="ibos-floatmenu-title">בשימוש לאחרונה</div>
-
-                    <button class="ibos-floatlink" data-page="forums">ניהול פורומים</button>
-                    <button class="ibos-floatlink" data-page="galleries">ניהול גלריות</button>
-                    <button class="ibos-floatlink" data-page="design-files">ניהול קבצי עיצוב</button>
-                    <button class="ibos-floatlink" data-page="categories">ניהול קטגוריות</button>
-                    <button class="ibos-floatlink" data-page="layouts">ניהול תבניות עיצוב</button>
-                    <button class="ibos-floatlink" data-page="langs">שפות נתמכות</button>
-
-                    <button class="ibos-floatlink ibos-green" data-page="exit">יציאה</button>
-                </aside>
-
-                <!-- אזור מרכזי -->
-                <main class="ibos-mainhtml">
-                    <div class="ibos-framewrap">
-                        <iframe
-                            id="ibosMainFrame"
-                            name="ibosMainFrame"
-                            frameborder="0"
-                            width="980"
-                            height="900"
-                            src="about:blank"
-                            title="אזור תוכן">
-                        </iframe>
-                    </div>
-
-                    <div class="ibos-emptyhint">
-                        <h2>הודעות ועדכונים</h2>
-                        <p>זהו שלד UI בלבד. בשלב הבא נחבר את ה-iframe/דפים/פעולות PHP.</p>
-                    </div>
-                </main>
-            </div>
-        </div>
-        <?php
-    }
+    echo '</div>';
 }
 
-new IBOS_Admin_UI_PabloRotem();
+/**
+ * יוצר sessionCode אמיתי בטבלת sessions כדי ש-commonValidateSession לא יפיל את המערכת.
+ * מחבר: pablo rotem
+ */
+function ibos_ensure_session_code(): string
+{
+    // אפשר לבחור משתמש iBOS "קבוע" (למשל id=1) כסופר-אדמין בתוך ה-iframe
+    $memberId = 1;
+    $isSuper  = 1;
+
+    // קוד סשן קצר-ארוך בסגנון iBOS
+    $code = ibos_random_code(49);
+
+    // התחברות DB דרך פונקציות iBOS
+    $mysqlHandle = commonConnectToDB();
+
+    // מכניסים סשן חדש
+    $codeEsc = mysqli_real_escape_string($mysqlHandle, $code);
+
+    // ניקוי סשנים ישנים (כמו המקור)
+    $minDate = date("Y-m-d H:i:00", strtotime("-6 hours"));
+    $minDateEsc = mysqli_real_escape_string($mysqlHandle, $minDate);
+    @commonDoQuery("DELETE FROM sessions WHERE creationTime < '{$minDateEsc}'");
+
+    // הכנסה
+    @commonDoQuery(
+        "INSERT INTO sessions (id, code, memberId, isSuper, creationTime, lastCheck)
+         VALUES (NULL, '{$codeEsc}', " . (int)$memberId . ", " . (int)$isSuper . ", NOW(), NOW())"
+    );
+
+    commonDisconnect($mysqlHandle);
+
+    return $code;
+}
+
+/**
+ * מחולל קוד בטוח (hex) כדי להחליף randomCode אם צריך.
+ * מחבר: pablo rotem
+ */
+function ibos_random_code(int $len = 49): string
+{
+    $bytes = (int)ceil($len / 2);
+    return substr(bin2hex(random_bytes($bytes)), 0, $len);
+}

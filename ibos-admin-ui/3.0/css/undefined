@@ -1,0 +1,3 @@
+/* Author: pablo rotem
+   Fallback כשהמערכת מבקשת /css/undefined בגלל guiLang חסר */
+@import url("HEB.css");
